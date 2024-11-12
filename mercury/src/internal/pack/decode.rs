@@ -202,8 +202,7 @@ impl Pack {
     ///
     /// # Returns
     /// Returns a `Result` containing either:
-    /// * A tuple with a `Vec<u8>` of decompressed data, a `Vec<u8>` of the original compressed data,
-    ///   and the total number of input bytes processed,
+    /// * A tuple with a `Vec<u8>` of decompressed data, and the total number of input bytes processed,
     /// * Or a `GitError` in case of a mismatch in expected size or any other reading error.
     ///
     pub fn decompress_data(
@@ -227,7 +226,7 @@ impl Pack {
                         expected_size
                     )))
                 } else {
-                    // If everything is as expected, return the buffer, the original data, and the total number of input bytes processed
+                    // If everything is as expected, return the decompressed data, and the total number of input bytes processed
                     Ok((buf, deflate.total_in() as usize))
                     // TODO this will likely be smaller than what the decompressor actually read from the underlying stream due to buffering.
                 }
@@ -261,14 +260,9 @@ impl Pack {
         let init_offset = *offset;
 
         // Attempt to read the type and size, handle potential errors
-        let (type_bits, size) = match utils::read_type_and_varint_size(pack, offset) {
-            Ok(result) => result,
-            Err(e) => {
-                // Handle the error e.g., by logging it or converting it to GitError
-                // and then return from the function
-                return Err(GitError::InvalidPackFile(format!("Read error: {}", e)));
-            }
-        };
+        let (type_bits, size) = utils::read_type_and_varint_size(pack, offset).map_err(|e| {
+            GitError::InvalidPackFile(format!("Read error: {}", e))
+        })?;
 
         // Check if the object type is valid
         let t = ObjectType::from_u8(type_bits)?;
@@ -369,7 +363,7 @@ impl Pack {
         tracing::info!("The pack file has {} objects", self.number);
         let mut offset: usize = 12;
         for i in 0..self.number {
-            // log per 2000&more then 1 se objects
+            // log per 1000&more then 1 se objects
             if i % 1000 == 0 {
                 let time_now = time.elapsed().as_millis();
                 if time_now - last_update_time > 1000 {
@@ -771,7 +765,7 @@ mod tests {
 
         let tmp = PathBuf::from("/tmp/.cache_temp");
         let f = tokio::fs::File::open(source).await.unwrap();
-        let stream = ReaderStream::new(f).map_err(|e| axum::Error::new(e));
+        let stream = ReaderStream::new(f).map_err(axum::Error::new);
         let p = Pack::new(
             Some(20),
             Some(1024 * 1024 * 1024 * 4),
