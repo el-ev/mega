@@ -355,9 +355,9 @@ impl Pack {
     {
         let time = Instant::now();
         let mut last_update_time = time.elapsed().as_millis();
-        let log_info = |_i: usize, pack: &Pack| {
+        let log_info = |i: usize, pack: &Pack| {
             tracing::info!("time {:.2} s \t decode: {:?} \t dec-num: {} \t cah-num: {} \t Objs: {} MB \t CacheUsed: {} MB",
-                time.elapsed().as_millis() as f64 / 1000.0, _i, pack.pool.queued_count(), pack.caches.queued_tasks(),
+                time.elapsed().as_millis() as f64 / 1000.0, i, pack.pool.queued_count(), pack.caches.queued_tasks(),
                 pack.cache_objs_mem_used() / 1024 / 1024,
                 pack.caches.memory_used() / 1024 / 1024);
         };
@@ -366,19 +366,12 @@ impl Pack {
         let caches = self.caches.clone();
         let mut reader = Wrapper::new(io::BufReader::new(pack));
 
-        let result = Pack::check_header(&mut reader);
-        match result {
-            Ok((object_num, _)) => {
-                self.number = object_num as usize;
-            }
-            Err(e) => {
-                return Err(e);
-            }
-        }
+        let (object_num, _) = Pack::check_header(&mut reader)?;
+        self.number = object_num as usize;
+
         tracing::info!("The pack file has {} objects", self.number);
         let mut offset: usize = 12;
-        let mut i = 0;
-        while i < self.number {
+        for i in 0..self.number {
             // log per 2000&more then 1 se objects
             if i % 1000 == 0 {
                 let time_now = time.elapsed().as_millis();
@@ -392,67 +385,55 @@ impl Pack {
             while self.memory_used() > self.mem_limit || self.pool.queued_count() > 2000 {
                 thread::yield_now();
             }
-            let r: Result<CacheObject, GitError> =
-                self.decode_pack_object(&mut reader, &mut offset);
-            match r {
-                Ok(mut obj) => {
-                    obj.set_mem_recorder(self.cache_objs_mem.clone());
-                    obj.record_mem_size();
+            let mut obj = self.decode_pack_object(&mut reader, &mut offset)?;
+            obj.set_mem_recorder(self.cache_objs_mem.clone());
+            obj.record_mem_size();
 
-                    // Wrapper of Arc Params, for convenience to pass
-                    let params = Arc::new(SharedParams {
-                        pool: self.pool.clone(),
-                        waitlist: self.waitlist.clone(),
-                        caches: self.caches.clone(),
-                        cache_objs_mem_size: self.cache_objs_mem.clone(),
-                        callback: callback.clone(),
-                    });
+            // Wrapper of Arc Params, for convenience to pass
+            let params = Arc::new(SharedParams {
+                pool: self.pool.clone(),
+                waitlist: self.waitlist.clone(),
+                caches: self.caches.clone(),
+                cache_objs_mem_size: self.cache_objs_mem.clone(),
+                callback: callback.clone(),
+            });
 
-                    let caches = caches.clone();
-                    let waitlist = self.waitlist.clone();
-                    self.pool.execute(move || {
-                        match obj.obj_type {
-                            ObjectType::Commit
-                            | ObjectType::Tree
-                            | ObjectType::Blob
-                            | ObjectType::Tag => {
-                                Self::cache_obj_and_process_waitlist(params, obj);
-                            }
-                            ObjectType::OffsetDelta => {
-                                if let Some(base_obj) = caches.get_by_offset(obj.base_offset) {
-                                    Self::process_delta(params, obj, base_obj);
-                                } else {
-                                    // You can delete this 'if' block ↑, because there are Second check in 'else'
-                                    // It will be more readable, but the performance will be slightly reduced
-                                    let base_offset = obj.base_offset;
-                                    waitlist.insert_offset(obj.base_offset, obj);
-                                    // Second check: prevent that the base_obj thread has finished before the waitlist insert
-                                    if let Some(base_obj) = caches.get_by_offset(base_offset) {
-                                        Self::process_waitlist(params, base_obj);
-                                    }
-                                }
-                            }
-                            ObjectType::HashDelta => {
-                                if let Some(base_obj) = caches.get_by_hash(obj.base_ref) {
-                                    Self::process_delta(params, obj, base_obj);
-                                } else {
-                                    let base_ref = obj.base_ref;
-                                    waitlist.insert_ref(obj.base_ref, obj);
-                                    if let Some(base_obj) = caches.get_by_hash(base_ref) {
-                                        Self::process_waitlist(params, base_obj);
-                                    }
-                                }
+            let caches = caches.clone();
+            let waitlist = self.waitlist.clone();
+            self.pool.execute(move || {
+                match obj.obj_type {
+                    ObjectType::Commit | ObjectType::Tree | ObjectType::Blob | ObjectType::Tag => {
+                        Self::cache_obj_and_process_waitlist(params, obj);
+                    }
+                    ObjectType::OffsetDelta => {
+                        if let Some(base_obj) = caches.get_by_offset(obj.base_offset) {
+                            Self::process_delta(params, obj, base_obj);
+                        } else {
+                            // You could delete this 'if' block ↑, because there is a second check in the 'else' clause
+                            // It would be more readable, but the performance would be slightly reduced
+                            let base_offset = obj.base_offset;
+                            waitlist.insert_offset(obj.base_offset, obj);
+                            // Second check: prevent that the base_obj thread has finished before the waitlist insert
+                            if let Some(base_obj) = caches.get_by_offset(base_offset) {
+                                Self::process_waitlist(params, base_obj);
                             }
                         }
-                    });
+                    }
+                    ObjectType::HashDelta => {
+                        if let Some(base_obj) = caches.get_by_hash(obj.base_ref) {
+                            Self::process_delta(params, obj, base_obj);
+                        } else {
+                            let base_ref = obj.base_ref;
+                            waitlist.insert_ref(obj.base_ref, obj);
+                            if let Some(base_obj) = caches.get_by_hash(base_ref) {
+                                Self::process_waitlist(params, base_obj);
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    return Err(e);
-                }
-            }
-            i += 1;
+            });
         }
-        log_info(i, self);
+        log_info(self.number, self);
         let render_hash = reader.final_hash();
         let mut trailer_buf = [0; 20];
         reader.read_exact(&mut trailer_buf).unwrap();
