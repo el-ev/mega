@@ -361,7 +361,7 @@ impl Pack {
         self.number = object_num as usize;
 
         tracing::info!("The pack file has {} objects", self.number);
-        let mut offset: usize = 12;
+        let mut offset: usize = 12; // 4(magic) + 4(version) + 4(number)
         for i in 0..self.number {
             // log per 1000&more then 1 se objects
             if i % 1000 == 0 {
