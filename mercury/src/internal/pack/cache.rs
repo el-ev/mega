@@ -9,9 +9,11 @@ use dashmap::{DashMap, DashSet};
 use lru_mem::LruCache;
 use threadpool::ThreadPool;
 
-use crate::time_it;
 use crate::hash::SHA1;
-use crate::internal::pack::cache_object::{ArcWrapper, CacheObject, MemSizeRecorder, FileLoadStore};
+use crate::internal::pack::cache_object::{
+    ArcWrapper, CacheObject, FileLoadStore, MemSizeRecorder,
+};
+use crate::time_it;
 
 pub trait _Cache {
     fn new(mem_size: Option<usize>, tmp_path: PathBuf, thread_num: usize) -> Self
@@ -33,7 +35,7 @@ pub struct Caches {
     // because "multi-thread IO" clone Arc<CacheObject>, so it won't be dropped in the main thread,
     // and `CacheObjects` will be killed by OS after Process ends abnormally
     // Solution: use `mimalloc`
-    lru_cache: Mutex<LruCache<String, ArcWrapper<CacheObject>>>, // *lru_cache require the key to implement lru::MemSize trait, so didn't use SHA1 as the key*
+    lru_cache: Mutex<LruCache<SHA1, ArcWrapper<CacheObject>>>,
     mem_size: Option<usize>,
     tmp_path: PathBuf,
     pool: Arc<ThreadPool>,
@@ -44,10 +46,10 @@ impl Caches {
     /// only get object from memory, not from tmp file
     fn try_get(&self, hash: SHA1) -> Option<Arc<CacheObject>> {
         let mut map = self.lru_cache.lock().unwrap();
-        map.get(&hash.to_plain_str()).map(|x| x.data.clone())
+        map.get(&hash).map(|x| x.data.clone())
     }
 
-    /// !IMPORTANT: because of the process of pack, the file must be written / be writing before, so it won't be dead lock
+    /// !IMPORTANT: because of the process of packing, the file must have been written or be in the process of being written, so it won't deadlock
     /// fall back to temp to get item. **invoker should ensure the hash is in the cache, or it will block forever**
     fn get_fallback(&self, hash: SHA1) -> io::Result<Arc<CacheObject>> {
         // read from tmp file
@@ -72,18 +74,21 @@ impl Caches {
             Some(self.pool.clone()),
         );
         x.set_store_path(Caches::generate_temp_path(&self.tmp_path, hash));
-        let _ = map.insert(hash.to_plain_str(), x); // handle the error
+        let _ = map.insert(hash, x); // TODO: handle the error
         Ok(obj)
     }
 
     /// generate the temp file path, hex string of the hash
     fn generate_temp_path(tmp_path: &Path, hash: SHA1) -> PathBuf {
+        let hash_str = hash.to_plain_str();
         let mut path = tmp_path.to_path_buf();
-        path.push(&hash.to_plain_str()[..2]); // use first 2 chars as the directory
-        if !path.exists() {
-            fs::create_dir(&path).unwrap();
+        path.push(&hash_str[..2]); // use first 2 chars as the directory
+        if let Err(e) = fs::create_dir(&path) {
+            if e.kind() != io::ErrorKind::AlreadyExists {
+                panic!("Failed to create directory: {:?}", e);
+            }
         }
-        path.push(hash.to_plain_str());
+        path.push(&hash_str);
         path
     }
 
@@ -103,7 +108,7 @@ impl Caches {
     /// memory used by the index (exclude lru_cache which is contained in CacheObject::get_mem_size())
     pub fn memory_used_index(&self) -> usize {
         self.map_offset.capacity() * (std::mem::size_of::<usize>() + std::mem::size_of::<SHA1>())
-        + self.hash_set.capacity() * (std::mem::size_of::<SHA1>())
+            + self.hash_set.capacity() * (std::mem::size_of::<SHA1>())
     }
 
     /// remove the tmp dir
@@ -154,7 +159,7 @@ impl _Cache for Caches {
                 Some(self.pool.clone()),
             );
             a_obj.set_store_path(Caches::generate_temp_path(&self.tmp_path, hash));
-            let _ = map.insert(hash.to_plain_str(), a_obj);
+            let _ = map.insert(hash, a_obj);
         }
         //order maters as for reading in 'get_by_offset()'
         self.hash_set.insert(hash);
@@ -194,8 +199,7 @@ impl _Cache for Caches {
         self.hash_set.len()
     }
     fn memory_used(&self) -> usize {
-        self.lru_cache.lock().unwrap().current_size()
-        + self.memory_used_index()
+        self.lru_cache.lock().unwrap().current_size() + self.memory_used_index()
     }
     fn clear(&self) {
         time_it!("Caches clear", {

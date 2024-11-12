@@ -44,6 +44,7 @@ impl Display for SHA1 {
         write!(f, "{}", self.to_plain_str().red().bold())
     }
 }
+
 impl AsRef<[u8]> for SHA1{
     fn as_ref(&self) -> &[u8] {
         &self.0
@@ -149,6 +150,14 @@ impl SHA1 {
     /// Export sha1 value to a byte array
     pub fn to_data(self) -> Vec<u8> {
         self.0.to_vec()
+    }
+}
+
+impl lru_mem::HeapSize for SHA1 {
+    fn heap_size(&self) -> usize {
+        // As the SHA1 struct contains only `[u8; 20]`, all data is placed on the stack.
+        // Therefore, the heap size is zero.
+        0
     }
 }
 
