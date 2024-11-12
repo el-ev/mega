@@ -321,11 +321,8 @@ impl Pack {
             }
             ObjectType::HashDelta => {
                 // Read 20 bytes to get the reference object SHA1 hash
-                let mut buf_ref = [0; 20];
-                pack.read_exact(&mut buf_ref).unwrap();
-                let ref_sha1 = SHA1::from_bytes(buf_ref.as_ref()); //TODO SHA1::from_stream()
-                                                                   // Offset is incremented by 20 bytes
-                *offset += 20; //TODO 改为常量
+                let ref_sha1 = SHA1::from_buf(pack).unwrap();
+                *offset += SHA1::SIZE;
 
                 let (data, raw_size) = self.decompress_data(pack, size)?;
                 *offset += raw_size;
@@ -364,8 +361,8 @@ impl Pack {
         let callback = Arc::new(callback);
 
         let caches = self.caches.clone();
-        let mut reader = Wrapper::new(io::BufReader::new(pack));
 
+        let mut reader = Wrapper::new(io::BufReader::new(pack));
         let (object_num, _) = Pack::check_header(&mut reader)?;
         self.number = object_num as usize;
 
@@ -435,9 +432,7 @@ impl Pack {
         }
         log_info(self.number, self);
         let render_hash = reader.final_hash();
-        let mut trailer_buf = [0; 20];
-        reader.read_exact(&mut trailer_buf).unwrap();
-        self.signature = SHA1::from_bytes(trailer_buf.as_ref());
+        self.signature = SHA1::from_buf(&mut reader).unwrap();
 
         if render_hash != self.signature {
             return Err(GitError::InvalidPackFile(format!(
@@ -457,20 +452,15 @@ impl Pack {
         self.pool.join(); // wait for all threads to finish
                           // !Attention: Caches threadpool may not stop, but it's not a problem (garbage file data)
                           // So that files != self.number
-        assert_eq!(self.waitlist.map_offset.len(), 0);
-        assert_eq!(self.waitlist.map_ref.len(), 0);
-        assert_eq!(self.number, caches.total_inserted());
+        debug_assert_eq!(self.waitlist.map_offset.len(), 0);
+        debug_assert_eq!(self.waitlist.map_ref.len(), 0);
+        debug_assert_eq!(self.number, caches.total_inserted());
         tracing::info!(
             "The pack file has been decoded successfully, takes: [ {:?} ]",
             time.elapsed()
         );
         self.caches.clear(); // clear cached objects & stop threads
-        assert_eq!(self.cache_objs_mem_used(), 0); // all the objs should be dropped until here
-
-        // impl in Drop Trait
-        // if self.clean_tmp {
-        //     self.caches.remove_tmp_dir();
-        // }
+        debug_assert_eq!(self.cache_objs_mem_used(), 0); // all the objs should be dropped until here
 
         Ok(())
     }

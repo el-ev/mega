@@ -96,6 +96,9 @@ impl std::str::FromStr for SHA1 {
 /// These method naming conventions (`new`, `from`, `to`) provide clarity and predictability in the API, making it easier for users
 /// to understand the intended use and functionality of each method within the `SHA1` struct.
 impl SHA1 {
+    /// The size of the SHA-1 hash value in bytes (20 bytes).
+    pub const SIZE: usize = 20;
+
     /// Calculate the SHA-1 hash of `Vec<u8>` data, then create a Hash value
     pub fn new(data: &Vec<u8>) -> SHA1 {
         // Create a Sha1 object for calculating the SHA-1 hash
@@ -124,6 +127,18 @@ impl SHA1 {
         h.0.copy_from_slice(bytes);
 
         h
+    }
+
+    /// Read 20 bytes from the buffer and create a Hash value from it
+    /// 
+    /// # Errors
+    /// 
+    /// If an I/O error occurs, this function may return an [`std::io::Error`].
+    pub fn from_buf(buf: &mut impl std::io::Read) -> std::io::Result<SHA1> {
+        let mut sha1 = SHA1::default();
+        // avoids copying the data
+        buf.read_exact(&mut sha1.0)?;
+        Ok(sha1)
     }
 
     /// Export sha1 value to plain String without the color chars
@@ -239,5 +254,41 @@ mod tests {
             }
             Err(e) => println!("Error: {}", e),
         }
+    }
+
+    #[test]
+    fn test_sha1_from_buf() {
+        let source = vec![
+            0x80, 0x50, 0x09, 0x29, 0x7c, 0x45, 0xf6, 0x28, 0xe8, 0xad, 0xd4, 0x31, 0xc1, 0x6e,
+            0x50, 0x9a, 0x80, 0x19, 0xa6, 0x62,
+        ];
+        let mut reader = std::io::Cursor::new(source);
+
+        let sha1 = SHA1::from_buf(&mut reader).unwrap();
+        assert_eq!(
+            sha1.to_data(),
+            vec![
+                0x80, 0x50, 0x09, 0x29, 0x7c, 0x45, 0xf6, 0x28, 0xe8, 0xad, 0xd4, 0x31, 0xc1,
+                0x6e, 0x50, 0x9a, 0x80, 0x19, 0xa6, 0x62
+            ]
+        );
+
+    }
+
+    #[test]
+    fn test_sha1_from_buf_eq_from_bytes() {
+        let source = vec![
+            0x80, 0x50, 0x09, 0x29, 0x7c, 0x45, 0xf6, 0x28, 0xe8, 0xad, 0xd4, 0x31, 0xc1, 0x6e,
+            0x50, 0x9a, 0x80, 0x19, 0xa6, 0x62,
+        ];
+        let mut reader = std::io::Cursor::new(source);
+
+        let sha1_from_buf = SHA1::from_buf(&mut reader).unwrap();
+        let sha1_from_bytes = SHA1::from_bytes(&[
+            0x80, 0x50, 0x09, 0x29, 0x7c, 0x45, 0xf6, 0x28, 0xe8, 0xad, 0xd4, 0x31, 0xc1, 0x6e,
+            0x50, 0x9a, 0x80, 0x19, 0xa6, 0x62,
+        ]);
+
+        assert_eq!(sha1_from_buf, sha1_from_bytes);
     }
 }

@@ -239,7 +239,7 @@ impl Index {
                 uid: file.read_u32::<BigEndian>()?,
                 gid: file.read_u32::<BigEndian>()?,
                 size: file.read_u32::<BigEndian>()?,
-                hash: utils::read_sha1(file)?,
+                hash: SHA1::from_buf(file)?,
                 flags: Flags::from_u16(file.read_u16::<BigEndian>()?),
                 name: String::new(),
             };
@@ -257,7 +257,7 @@ impl Index {
         }
 
         // Extensions
-        while file.bytes_read() + utils::SHA1_SIZE < total_size as usize {
+        while file.bytes_read() + SHA1::SIZE < total_size as usize {
             // The remaining 20 bytes must be checksum
             let sign = utils::read_bytes(file, 4)?;
             println!("{:?}", String::from_utf8(sign.clone())?);
@@ -276,8 +276,8 @@ impl Index {
 
         // check sum
         let file_hash = file.final_hash();
-        let check_sum = utils::read_sha1(file)?;
-        if file_hash != check_sum {
+        let checksum = SHA1::from_buf(file)?;
+        if file_hash != checksum {
             return Err(GitError::InvalidIndexFile("Check sum failed".to_string()));
         }
         assert_eq!(index.size(), num as usize);
